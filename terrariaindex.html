@@ -1,0 +1,291 @@
+
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>JS Terraria - Ultimate Edition</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #87CEEB; font-family: 'Segoe UI', sans-serif; touch-action: none; color: white; }
+        canvas { display: block; image-rendering: pixelated; }
+        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        /* ホットバー */
+        #hotbar { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); display: flex; gap: 5px; pointer-events: auto; }
+        .slot { width: 45px; height: 45px; background: rgba(0,0,0,0.7); border: 2px solid #555; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 9px; cursor: pointer; }
+        .slot.selected { border-color: #fff; background: rgba(255,255,255,0.2); transform: scale(1.1); }
+
+        /* モード/操作UI */
+        .touch-btn { position: absolute; bottom: 30px; background: rgba(0,0,0,0.5); border: 2px solid #fff; border-radius: 50%; width: 70px; height: 70px; display: flex; align-items: center; justify-content: center; pointer-events: auto; font-weight: bold; user-select: none; }
+        #btn-jump { right: 20px; width: 85px; height: 85px; }
+        #btn-mode { left: 150px; border-radius: 10px; width: 80px; font-size: 11px; text-align: center; }
+        #btn-inv { right: 20px; bottom: 130px; width: 60px; height: 60px; border-radius: 10px; background: rgba(0,100,255,0.4); }
+        #joystick-area { position: absolute; bottom: 30px; left: 20px; width: 120px; height: 120px; background: rgba(255,255,255,0.1); border-radius: 50%; pointer-events: auto; }
+        #joystick-stick { position: absolute; top: 35px; left: 35px; width: 50px; height: 50px; background: rgba(255,255,255,0.4); border-radius: 50%; }
+
+        /* メニュー画面 */
+        #menu-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: none; pointer-events: auto; padding: 20px; box-sizing: border-box; overflow-y: auto; }
+        .menu-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 900px; margin: 0 auto; }
+        .panel { background: #222; border: 2px solid #444; padding: 15px; border-radius: 8px; }
+        .craft-item { display: flex; justify-content: space-between; align-items: center; background: #333; margin: 5px 0; padding: 10px; border-radius: 5px; border: 1px solid #555; }
+        .craft-item.can { border-color: #4CAF50; background: #2e3d2e; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div id="hotbar"></div>
+    <div id="joystick-area"><div id="joystick-stick"></div></div>
+    <div id="btn-mode" class="touch-btn">MODE:<br>MINE</div>
+    <div id="btn-jump" class="touch-btn">JUMP</div>
+    <div id="btn-inv" class="touch-btn">MENU</div>
+
+    <div id="menu-overlay">
+        <h2 style="text-align:center;">INVENTORY & CRAFTING</h2>
+        <div class="menu-grid">
+            <div class="panel">
+                <h3>STORAGE</h3>
+                <div id="inv-full" style="display: flex; flex-wrap: wrap; gap: 5px;"></div>
+            </div>
+            <div class="panel">
+                <h3>RECIPES</h3>
+                <div id="craft-list"></div>
+            </div>
+        </div>
+        <button onclick="toggleMenu()" style="width:100%; margin-top:20px; padding:15px; background:#444; color:white; border:none; cursor:pointer;">BACK TO GAME (E)</button>
+    </div>
+</div>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const TILE_SIZE = 32;
+const MAP_W = 600, MAP_H = 100;
+
+const TILES = {
+    1: { name: "Dirt", main: "#6b4423", light: "#8b5a2b", dark: "#4d331b", hp: 6, solid: true },
+    2: { name: "Grass", main: "#388e3c", light: "#4caf50", dark: "#2e7d32", hp: 6, solid: true },
+    3: { name: "Stone", main: "#757575", light: "#9e9e9e", dark: "#616161", hp: 18, solid: true },
+    4: { name: "Wood", main: "#5d4037", light: "#795548", dark: "#3e2723", hp: 10, solid: false },
+    5: { name: "Plat", main: "#d2b48c", light: "#e6ccac", dark: "#b08d57", hp: 4, solid: true },
+    7: { name: "Sand", main: "#dcb35c", light: "#edc9af", dark: "#c79b4d", hp: 4, solid: true },
+    8: { name: "Corrupt", main: "#512da8", light: "#673ab7", dark: "#311b92", hp: 25, solid: true }
+};
+
+const RECIPES = [
+    { result: 5, count: 4, ingredients: { 4: 1 }, name: "Wood Platform" },
+    { result: 3, count: 1, ingredients: { 1: 5 }, name: "Solid Stone" }
+];
+
+let world = Array.from({length: MAP_H}, () => new Int8Array(MAP_W).fill(0));
+let inventory = { 4: 10 };
+let hotbarIds = [1, 3, 4, 5, 8];
+let selectedSlot = 0;
+let player = { x: 100*TILE_SIZE, y: 30*TILE_SIZE, w: 22, h: 32, vx: 0, vy: 0, dir: 1 };
+let camera = { x: 0, y: 0 }, blockHP = {}, particles = [], drops = [], keys = {};
+let isTouching = false, touchX = 0, touchY = 0, moveDir = 0, isMenuOpen = false, currentMode = 0; // 0:MINE, 1:PLACE
+
+function setup() {
+    for (let x = 0; x < MAP_W; x++) {
+        let g = Math.floor(Math.sin(x*0.12)*5 + 45);
+        for (let y = g; y < MAP_H; y++) {
+            if (y === g) world[y][x] = x > 300 ? 7 : (x > 500 ? 8 : 2);
+            else world[y][x] = (y < g+5) ? 1 : 3;
+        }
+        if(x % 15 === 0 && x > 20) for(let i=1; i<7; i++) world[g-i][x] = 4;
+    }
+    updateUI();
+}
+
+function update() {
+    if (isMenuOpen) { draw(); return requestAnimationFrame(update); }
+    
+    // Movement Logic
+    let finalMove = moveDir || (keys['KeyA'] ? -1 : (keys['KeyD'] ? 1 : 0));
+    if(finalMove !== 0) player.dir = finalMove;
+    player.vx = finalMove * 4.8;
+    player.vy += 0.55;
+
+    // Collisions
+    let nx = player.x + player.vx;
+    if(!isSolid(Math.floor(nx/TILE_SIZE), Math.floor((player.y+4)/TILE_SIZE)) && !isSolid(Math.floor((nx+player.w)/TILE_SIZE), Math.floor((player.y+4)/TILE_SIZE))) player.x = nx;
+    let ny = player.y + player.vy;
+    if(isSolid(Math.floor((player.x+2)/TILE_SIZE), Math.floor((ny+player.h)/TILE_SIZE)) || isSolid(Math.floor((player.x+player.w-2)/TILE_SIZE), Math.floor((ny+player.h)/TILE_SIZE))) {
+        if(player.vy > 8) createParticles(player.x+11, player.y+player.h, "#fff", 4);
+        player.y = Math.floor((ny+player.h)/TILE_SIZE)*TILE_SIZE - player.h;
+        player.vy = 0;
+        if(keys['Space']) player.vy = -11;
+    } else player.y = ny;
+
+    // Action Mode
+    if(isTouching) {
+        let mx = Math.floor((touchX + camera.x)/TILE_SIZE), my = Math.floor((touchY + camera.y)/TILE_SIZE);
+        if(currentMode === 0) { // MINE
+            if(world[my]?.[mx] > 0) {
+                let id = world[my][mx], key = `${mx},${my}`;
+                if(!blockHP[key]) blockHP[key] = TILES[id].hp;
+                blockHP[key] -= 0.5;
+                createParticles((mx+0.5)*TILE_SIZE, (my+0.5)*TILE_SIZE, TILES[id].main, 1);
+                if(blockHP[key] <= 0) {
+                    spawnDrop(mx, my, id); world[my][mx] = 0; delete blockHP[key]; updateUI();
+                }
+            }
+        } else { // PLACE
+            if(world[my]?.[mx] === 0) {
+                let id = hotbarIds[selectedSlot];
+                if(id && inventory[id] > 0) {
+                    let tx = mx*TILE_SIZE, ty = my*TILE_SIZE;
+                    if(!(tx < player.x+player.w && tx+TILE_SIZE > player.x && ty < player.y+player.h && ty+TILE_SIZE > player.y)) {
+                        world[my][mx] = id; inventory[id]--; updateUI();
+                    }
+                }
+            }
+        }
+    }
+
+    // Drops & Particles
+    drops.forEach((d, i) => {
+        d.vy += 0.4; d.x += d.vx; d.y += d.vy;
+        if(isSolid(Math.floor(d.x/TILE_SIZE), Math.floor((d.y+d.h)/TILE_SIZE))) { d.vy = 0; d.y = Math.floor((d.y+d.h)/TILE_SIZE)*TILE_SIZE-d.h; d.vx *= 0.8; }
+        if(Math.hypot((player.x+11)-d.x, (player.y+16)-d.y) < 70) {
+            d.vx += (player.x+11-d.x)*0.2; d.vy += (player.y+16-d.y)*0.2;
+            if(Math.hypot((player.x+11)-d.x, (player.y+16)-d.y) < 15) { inventory[d.id]=(inventory[d.id]||0)+1; drops.splice(i,1); updateUI(); }
+        }
+    });
+    particles.forEach((p, i) => { p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.life -= 0.03; if(p.life <= 0) particles.splice(i, 1); });
+
+    camera.x += (player.x - canvas.width/2 - camera.x) * 0.1;
+    camera.y += (player.y - canvas.height/2 - camera.y) * 0.1;
+    draw();
+    requestAnimationFrame(update);
+}
+
+function draw() {
+    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+    ctx.clearRect(0,0,canvas.width, canvas.height);
+
+    // Parallax Background
+    drawBG();
+
+    ctx.save();
+    ctx.translate(-camera.x, -camera.y);
+
+    // World Tiles
+    for (let y = Math.floor(camera.y/TILE_SIZE)-1; y < Math.floor((camera.y+canvas.height)/TILE_SIZE)+1; y++) {
+        for (let x = Math.floor(camera.x/TILE_SIZE)-1; x < Math.floor((camera.x+canvas.width)/TILE_SIZE)+1; x++) {
+            let id = world[y]?.[x];
+            if(id) {
+                let t = TILES[id], tx = x*TILE_SIZE, ty = y*TILE_SIZE;
+                ctx.fillStyle = t.main; ctx.fillRect(tx, ty, TILE_SIZE, TILE_SIZE);
+                // Bevel
+                ctx.fillStyle = t.light; ctx.fillRect(tx, ty, TILE_SIZE, 3); ctx.fillRect(tx, ty, 3, TILE_SIZE);
+                ctx.fillStyle = t.dark; ctx.fillRect(tx, ty+TILE_SIZE-3, TILE_SIZE, 3); ctx.fillRect(tx+TILE_SIZE-3, ty, 3, TILE_SIZE);
+                // Grass tufts
+                if(id === 2 && (!world[y-1] || world[y-1][x] === 0)) {
+                    ctx.fillStyle = "#66bb6a"; ctx.fillRect(tx+4, ty-4, 6, 4); ctx.fillRect(tx+20, ty-3, 5, 3);
+                }
+                // Damage
+                if(blockHP[`${x},${y}`]) {
+                    ctx.fillStyle = `rgba(0,0,0,${1 - blockHP[`${x},${y}`]/t.hp})`;
+                    ctx.fillRect(tx, ty, TILE_SIZE, TILE_SIZE);
+                }
+            }
+        }
+    }
+
+    // Placement Ghost
+    if(currentMode === 1 && !isMenuOpen) {
+        let mx = Math.floor((touchX + camera.x)/TILE_SIZE), my = Math.floor((touchY + camera.y)/TILE_SIZE);
+        ctx.strokeStyle = "rgba(255,255,255,0.6)"; ctx.lineWidth = 2;
+        ctx.strokeRect(mx*TILE_SIZE, my*TILE_SIZE, TILE_SIZE, TILE_SIZE);
+    }
+
+    drops.forEach(d => { ctx.fillStyle = TILES[d.id].main; ctx.fillRect(d.x, d.y, d.w, d.h); });
+    particles.forEach(p => { ctx.globalAlpha = p.life; ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size); });
+    ctx.globalAlpha = 1;
+
+    // Player
+    ctx.fillStyle = "#e91e63"; ctx.fillRect(player.x, player.y, player.w, player.h);
+    ctx.fillStyle = "white"; let ex = player.dir === 1 ? player.x+13 : player.x+3; ctx.fillRect(ex, player.y+6, 6, 6);
+    ctx.fillStyle = "black"; ctx.fillRect(player.dir === 1 ? ex+3 : ex+1, player.y+8, 2, 2);
+
+    ctx.restore();
+}
+
+function drawBG() {
+    ctx.fillStyle = "#5da9c9";
+    for(let i=0; i<6; i++) {
+        let x = (i * 450 - camera.x * 0.2) % (canvas.width + 500);
+        ctx.beginPath(); ctx.moveTo(x, canvas.height); ctx.lineTo(x+250, canvas.height-250); ctx.lineTo(x+500, canvas.height); ctx.fill();
+    }
+}
+
+function createParticles(x, y, color, count=5) {
+    for(let i=0; i<count; i++) particles.push({ x, y, vx:(Math.random()-0.5)*6, vy:(Math.random()-0.5)*6-2, size:Math.random()*4+2, life:1, color });
+}
+
+function spawnDrop(gx, gy, id) { drops.push({ id, x: gx*TILE_SIZE+8, y: gy*TILE_SIZE+8, vx:(Math.random()-0.5)*6, vy:-5, w:10, h:10 }); }
+
+function updateUI() {
+    document.getElementById('hotbar').innerHTML = hotbarIds.map((id, i) => `
+        <div class="slot ${i === selectedSlot ? 'selected' : ''}" onclick="selectedSlot=${i};updateUI();">
+            <div style="width:18px;height:18px;background:${TILES[id].main};border:1px solid #fff"></div>
+            ${inventory[id]||0}
+        </div>
+    `).join('');
+    document.getElementById('btn-mode').innerHTML = `MODE:<br>${currentMode === 0 ? 'MINE' : 'PLACE'}`;
+    document.getElementById('btn-mode').style.color = currentMode === 0 ? '#ff4444' : '#44ccff';
+
+    document.getElementById('inv-full').innerHTML = Object.keys(inventory).filter(id=>inventory[id]>0).map(id=>`
+        <div class="slot" style="width:40px;height:40px;"><div style="width:15px;height:15px;background:${TILES[id].main}"></div>${inventory[id]}</div>
+    `).join('');
+
+    document.getElementById('craft-list').innerHTML = RECIPES.map((r, i) => {
+        const can = Object.keys(r.ingredients).every(ing => (inventory[ing]||0) >= r.ingredients[ing]);
+        return `<div class="craft-item ${can?'can':''}" onclick="craft(${i})"><span>${r.name} x${r.count}</span> <button ${!can?'disabled':''}>MAKE</button></div>`;
+    }).join('');
+}
+
+function toggleMenu() { isMenuOpen = !isMenuOpen; document.getElementById('menu-overlay').style.display = isMenuOpen ? 'block' : 'none'; updateUI(); }
+function craft(idx) {
+    const r = RECIPES[idx];
+    if(Object.keys(r.ingredients).every(ing => (inventory[ing]||0) >= r.ingredients[ing])) {
+        Object.keys(r.ingredients).forEach(ing => inventory[ing] -= r.ingredients[ing]);
+        inventory[r.result] = (inventory[r.result]||0) + r.count; updateUI();
+    }
+}
+function isSolid(gx, gy) { return world[gy] && world[gy][gx] > 0 && TILES[world[gy][gx]].solid; }
+
+// Input
+window.onkeydown = e => { 
+    if(e.code === 'KeyQ' || e.code === 'ShiftLeft') { currentMode = 1-currentMode; updateUI(); }
+    if(e.code === 'KeyE') toggleMenu();
+    if(e.key >= '1' && e.key <= '5') { selectedSlot = parseInt(e.key)-1; updateUI(); }
+    keys[e.code] = true;
+};
+window.onkeyup = e => keys[e.code] = false;
+canvas.onmousedown = e => { isTouching = true; touchX = e.clientX; touchY = e.clientY; };
+window.onmouseup = () => isTouching = false;
+canvas.onmousemove = e => { touchX = e.clientX; touchY = e.clientY; };
+
+document.getElementById('btn-mode').ontouchstart = e => { e.preventDefault(); currentMode = 1-currentMode; updateUI(); };
+document.getElementById('btn-jump').ontouchstart = e => { e.preventDefault(); keys['Space'] = true; };
+document.getElementById('btn-jump').ontouchend = () => keys['Space'] = false;
+document.getElementById('btn-inv').ontouchstart = e => { e.preventDefault(); toggleMenu(); };
+
+const area = document.getElementById('joystick-area');
+area.ontouchmove = e => {
+    let dx = e.touches[0].clientX - (area.getBoundingClientRect().left + 60);
+    moveDir = dx > 15 ? 1 : (dx < -15 ? -1 : 0);
+    document.getElementById('joystick-stick').style.transform = `translate(${moveDir * 25}px, -50%)`;
+};
+area.ontouchend = () => { moveDir = 0; document.getElementById('joystick-stick').style.transform = `none`; };
+
+setup(); update();
+</script>
+</body>
+</html>
+
